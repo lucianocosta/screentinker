@@ -37,7 +37,7 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/LUCIANOCOSTA/screentinker:latest
-            ghcr.io/LUCIANOCOSTA/screentinker:${{ github.sha }}
+            ghcr.io/lucianocosta/screentinker:latest
+            ghcr.io/lucianocosta/screentinker:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
