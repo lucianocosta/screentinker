@@ -141,9 +141,18 @@ async function probeAndUpdateDuration(content) {
   return null;
 }
 
+// #714: is this access context an admin OF THE PLAYLIST'S WORKSPACE? A direct workspace_admin
+// membership, or an org/platform admin reaching the workspace act-as (ctx.actingAs — resolved by
+// lib/tenancy.js accessContext, which only grants actingAs to org_owner/org_admin and platform
+// staff). A workspace_editor/viewer is not an admin. Mirrors permissions.canAdmin, but evaluated
+// against the resource's workspace rather than the request's active one.
+function isPlaylistAdmin(ctx) {
+  return !!ctx && (ctx.actingAs || ctx.workspaceRole === 'workspace_admin');
+}
+
 // Phase 2.2k: workspace-aware playlist access. Returns the playlist row (with
 // req.playlistCtx populated) or sends 403/404. requireWrite=false for reads.
-function loadPlaylistAccess(req, res, requireWrite) {
+function loadPlaylistAccess(req, res, requireWrite, opts = {}) {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) { res.status(404).json({ error: 'playlist not found' }); return null; }
   if (!playlist.workspace_id) { res.status(403).json({ error: 'Playlist not assigned to a workspace' }); return null; }
@@ -152,6 +161,20 @@ function loadPlaylistAccess(req, res, requireWrite) {
   if (!ctx) { res.status(403).json({ error: 'Access denied' }); return null; }
   if (requireWrite && !ctx.actingAs && ctx.workspaceRole === 'workspace_viewer') {
     res.status(403).json({ error: 'Read-only access' }); return null;
+  }
+  /*
+   * #714 admin-only playlists: a workspace admin can lock a playlist so only an admin may edit,
+   * reorder or delete it. Like the corporate guard below, this one check covers every CONTENT-edit
+   * route in this file (PUT /:id, publish, discard, DELETE, every item route, selection, bulk,
+   * reorder, item schedules), because they pass through requirePlaylistWrite. /:id/assign is the one
+   * deliberate exception (requirePlaylistAssign passes skipAdminLock): assigning a locked playlist
+   * to a screen is USING it, not editing it, so an editor keeps that. "Admin" here is the resource
+   * workspace's admin: a workspace_admin, or an org/platform admin reaching it act-as (ctx.actingAs).
+   * A workspace_editor (content manager) is refused from editing, never from assigning.
+   */
+  if (requireWrite && !opts.skipAdminLock && playlist.admin_locked && !isPlaylistAdmin(ctx)) {
+    res.status(403).json({ error: 'This playlist is admin-only. Ask a workspace admin to make this change.', code: 'PLAYLIST_ADMIN_LOCKED' });
+    return null;
   }
   /*
    * ⚠️ CORPORATE: the ONE call that covers every write route in this file — PUT /:id, publish,
@@ -177,6 +200,15 @@ function requirePlaylistRead(req, res, next) {
 
 function requirePlaylistWrite(req, res, next) {
   if (!loadPlaylistAccess(req, res, true)) return;
+  next();
+}
+
+// #714: assigning a locked playlist to a screen is USING it, not editing its contents, so a
+// workspace editor keeps that ability. Only the admin-lock check is skipped — the read-only
+// viewer block and the corporate guard still apply (a viewer still cannot assign, and a
+// corporate-governed playlist is still governed).
+function requirePlaylistAssign(req, res, next) {
+  if (!loadPlaylistAccess(req, res, true, { skipAdminLock: true })) return;
   next();
 }
 
@@ -1258,6 +1290,24 @@ router.put('/:id', requirePlaylistWrite, (req, res) => {
     updates.push('description = ?');
     values.push(description.trim());
   }
+  /*
+   * #714: lock/unlock the playlist for admins only. Changing the designation is itself an
+   * admin-only act — an editor must not be able to lock a playlist (or, on an unlocked one they can
+   * still reach, unlock it). loadPlaylistAccess already refuses an editor any write to a LOCKED
+   * playlist; this additionally refuses an editor who tries to set the flag on an unlocked one.
+   */
+  let lockChanged = false;
+  if (req.body.admin_locked !== undefined) {
+    if (!isPlaylistAdmin(req.playlistCtx)) {
+      return res.status(403).json({ error: 'Only a workspace admin can change whether a playlist is admin-only.', code: 'PLAYLIST_ADMIN_LOCKED' });
+    }
+    const locked = req.body.admin_locked ? 1 : 0;
+    if (locked !== (req.playlist.admin_locked ? 1 : 0)) {
+      updates.push('admin_locked = ?');
+      values.push(locked);
+      lockChanged = true;
+    }
+  }
   if (req.body.playback_order !== undefined) {
     const order = normalizePlaybackOrder(req.body.playback_order);
     if (order === false) return res.status(400).json({ error: 'playback_order must be sequential, shuffle, or weighted' });
@@ -1403,8 +1453,11 @@ router.put('/:id', requirePlaylistWrite, (req, res) => {
       : req.body.playback_order !== undefined ? 'Changed playback order'
         : (layoutChanged || moving) ? 'Changed layout'
           : defaultZoneChanged ? 'Changed default zone'
-            : bgChanged ? 'Changed background colour' : 'Renamed';
+            : bgChanged ? 'Changed background colour'
+              : lockChanged ? (req.body.admin_locked ? 'Locked to admins' : 'Unlocked for editors') : 'Renamed';
     require('../lib/revisions').recordCurrent(db, 'playlist', req.params.id, { actor: require('../lib/releases').actorOf(req), summary });
+    // #714: a security-relevant setting change, so it goes to the audit log (not the draft/publish flow).
+    if (lockChanged) require('../lib/audit').auditFromReq(req, 'playlist.admin_lock_changed', { playlist_id: req.params.id, admin_locked: req.body.admin_locked ? 1 : 0 });
     if (req.body.playback_order !== undefined) markDraft(req.params.id, req, 'Changed playback order');
     if (rulesChanged) markDraft(req.params.id, req, 'Changed smart rules');
     if (bgChanged) markDraft(req.params.id, req, 'Changed background colour');
@@ -2629,7 +2682,7 @@ router.post('/:id/items/reorder', requirePlaylistWrite, (req, res) => {
 // leak. Today checks device.user_id only; a caller with reach into a foreign
 // workspace could assign their own playlist to a device in that workspace
 // (or vice versa). Now: device must be in the playlist's workspace.
-router.post('/:id/assign', requirePlaylistWrite, (req, res) => {
+router.post('/:id/assign', requirePlaylistAssign, (req, res) => {
   const { device_id } = req.body;
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
