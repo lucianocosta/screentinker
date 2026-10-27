@@ -22,8 +22,18 @@
   real LG panels by a customer evaluating ScreenTinker. `ScreenTinker.ipk` is unchanged, so panels
   already running it keep updating from it.
 
+- **A per-screen "Mains powered (ignore battery)" override** (#724). Some commercial TV boards report
+  a battery that is not there, pinned at a fixed level such as a permanent "42%, charging", which the
+  player's own presence check cannot catch because the board lies about having a battery at all.
+  Turning this on for a screen makes the server blank its battery reading when telemetry arrives, so
+  the panel reads as mains everywhere — the dashboard and the battery alerts — whatever the board
+  claims. Off by default; honest mains boards are already handled and need no switch.
+
 ### Fixed
 
+- **A help tip no longer clips inside the device page's tab bar on mobile** (#721). That bar is a
+  horizontal scroll container, which cut off a tip that opened above a tab; the tip now renders above
+  the container so it is fully visible.
 - **The webOS app defaults to screentinker.com and recovers from a stalled player load instead of a
   black screen** (#728). A fresh panel now plays with no server address typed in (a value entered on
   the remote, or shipped in `config.json`, still wins, and Back still opens setup). And when the
