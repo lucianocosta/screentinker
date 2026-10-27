@@ -31,6 +31,14 @@
 
 ### Fixed
 
+- **A YouTube video on a video wall or a synced group no longer restarts on the follower screens**
+  (#729, reported from the field on a two-TV wall). The leader runs the playlist and the followers
+  take their place from it, but a YouTube item on a follower advanced itself when it ended, or when
+  its fallback timer fired (about every ten seconds on a muted, cropped screen whose reported
+  duration comes back as zero), diverged from the leader, and was snapped back, which looked exactly
+  like the video restarting. A YouTube item now follows the shared clock the way an uploaded video
+  already did. Note: YouTube is still not frame-synced across a wall (the screens play it in rough
+  step); an uploaded video file is the one to use for a frame-exact spanned wall.
 - **A help tip no longer clips inside the device page's tab bar on mobile** (#721). That bar is a
   horizontal scroll container, which cut off a tip that opened above a tab; the tip now renders above
   the container so it is fully visible.
